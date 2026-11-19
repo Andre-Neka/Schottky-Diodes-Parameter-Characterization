@@ -1,0 +1,1 @@
+# Schottky-Diodes-Parameter-Characterization
