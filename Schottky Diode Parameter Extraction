@@ -1,0 +1,499 @@
+##############################################################################
+# Libraries
+##############################################################################
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.stats import linregress
+from scipy.signal import savgol_filter
+import os
+
+
+##############################################################################
+# FUNDAMENTAL QUANTITIES
+##############################################################################
+q = 1.602176634e-19          # [C] electron charge
+epsilon_0 = 8.85418e-14      # [F/cm] vacuum permittivity - From Sze, pg. 849
+kB = 1.380649e-23            # [J/K] Boltzmann constant
+m_e = 9.1093837139e-31       # [kg] electron rest mass - 2022 CODATA
+h = 6.62607015e-34           # [J/Hz] Planck constant
+A_star_free = (4 * np.pi * q * m_e * kB**2 / h**3) * 1e-4  # [A/(cm^2*K^2)] (~120.17)
+
+
+##############################################################################
+# Material Classes
+##############################################################################
+class silicon():
+    # Si - From Sze, pg. 850
+    # Properties @ 300 K
+    name = 'Si'
+    srimName = 'Si'
+    epsilon_r = 11.9                 # [  ] relative silicon permittivity (to vacuum)
+    epsilon = epsilon_0 * epsilon_r  # [F/cm] silicon permittivity
+    density = 2.328                  # [g/cm^3] density
+    breakdownField = 3.0e5           # [V/cm] breakdown field
+    E_gap = 1.12                     # [eV] energy gap @ 300 K
+    E_eh = 3.6                       # [eV] average energy to create an electron-hole pair
+    electronMobility = 1500.0        # [cm^2.V^(-1).s^(-1)] electron mobility (drift)
+    holeMobility = 450.0             # [cm^2.V^(-1).s^(-1)] hole mobility (drift)
+    A_star = 112.0                   # [A.cm^(-2).K^(-2)] effective Richardson constant (n-Si)
+
+
+class silicon_carbide():
+    # 4H-SiC - (1) From Baliga, Fundamentals of Power Semiconductor Devices, pp. 24, 2019
+    #          (2) From Munteanu & Autran, http://dx.doi.org/10.5772/intechopen.71528
+    #          (3) From Parameter Extraction Procedure for a Physics-Based Power SiC Schottky Diode Model, Ruiyun Fu, et. al
+    # Properties @ 300 K
+    name = 'SiC'
+    srimName = 'Silicon Carbide  (ICRU-590)'
+    epsilon_r = 9.7                  # [  ] relative permittivity (to vacuum)
+    epsilon = epsilon_0 * epsilon_r  # [F/cm] material permittivity
+    density = 3.21                   # [g/cm^3] density (2)
+    E_gap = 3.26                     # [eV] energy gap @ 300 K
+    E_eh = 7.8                       # [eV] average energy to create an electron-hole pair (2)
+    electronMobility = 550.0         # [cm^2.V^(-1).s^(-1)] electron mobility @ 300 K (Fu et al., Table II)
+    holeMobility = 50.0              # [cm^2.V^(-1).s^(-1)] hole mobility (drift)
+    breakdownField = 2.2e6           # [V/cm]
+    A_star = 146.0                   # [A.cm^(-2).K^(-2)] effective Richardson constant (Fu et al., Sec. III-B)
+
+
+class gallium_nitride():
+    # GaN - (1) From Munteanu & Autran, Microelectronics Reliability 100–101 (2019) 113357
+    #       (2) From Munteanu & Autran, http://dx.doi.org/10.5772/intechopen.71528
+    # Properties @ 300 K
+    name = 'GaN'
+    srimName = 'Gallium Nitride (ICRU-462)'
+    epsilon_r = 8.9                  # [  ] (static) relative permittivity (to vacuum)
+    epsilon = epsilon_0 * epsilon_r  # [F/cm] material permittivity
+    density = 6.1                    # [g/cm^3] density (2)
+    E_gap = 3.39                     # [eV] energy bandgap @ 300 K
+    E_eh = 8.9                       # [eV] average energy to create an electron-hole pair
+    electronMobility = 1000.0        # [cm^2.V^(-1).s^(-1)] electron mobility (drift)
+    holeMobility = 30.0              # [cm^2.V^(-1).s^(-1)] hole mobility (drift)
+    A_star = 26.4                    # [A.cm^(-2).K^(-2)] effective Richardson constant (n-GaN, m* = 0.22 m_e)
+
+
+class germanium():
+    # Ge - From Munteanu & Autran, Microelectronics Reliability 126 (2021) 114256
+    # Properties @ 300 K
+    name = 'Ge'
+    srimName = 'Ge'
+    epsilon_r = 16.1                 # [  ] relative permittivity (to vacuum)
+    epsilon = epsilon_0 * epsilon_r  # [F/cm] material permittivity
+    density = 5.3267                 # [g/cm^3] density
+    E_gap = 0.661                    # [eV] energy bandgap @ 300 K
+    E_eh = 2.9                       # [eV] average energy to create an electron-hole pair
+    electronMobility = 3900.0        # [cm^2.V^(-1).s^(-1)] electron mobility (drift)
+    holeMobility = 1900.0            # [cm^2.V^(-1).s^(-1)] hole mobility (drift)
+    A_star = 50.0                    # [A.cm^(-2).K^(-2)] effective Richardson constant (n-Ge)
+
+
+class gallium_arsenide():
+    name = 'GaAs'
+    srimName = 'Gallium arsenide (ICRU-460)'
+    # GaAs - (1) From Munteanu & Autran, http://dx.doi.org/10.5772/intechopen.71528
+    #        (2) From Meneghini, Power GaN Devices: Materials, Applications and Reliability, 2017
+    # Properties @ 300 K
+    epsilon_r = 12.9                 # [  ] (static) relative material permittivity (to vacuum) (2)
+    epsilon = epsilon_0 * epsilon_r  # [F/cm] material permittivity
+    density = 5.32                   # [g/cm^3] density
+    E_gap = 1.424                    # [eV] energy gap @ 300 K
+    E_eh = 4.8                       # [eV] average energy to create an electron-hole pair
+    electronMobility = 8500.0        # [cm^2.V^(-1).s^(-1)] electron mobility (drift) (2)
+    holeMobility = 400.0             # [cm^2.V^(-1).s^(-1)] hole mobility (drift) (2)
+    A_star = 8.16                    # [A.cm^(-2).K^(-2)] effective Richardson constant (n-GaAs, m* = 0.067 m_e)
+
+
+class diamond():
+    # C (diamond) - (1) From Munteanu & Autran, http://dx.doi.org/10.5772/intechopen.71528
+    #               (2) From Meneghini, Power GaN Devices: Materials, Applications and Reliability, 2017
+    #               (3) From Shimaoka et al., Fano factor evaluation of diamond detectors for alpha particles, 2016
+    # Properties @ 300 K
+    name = 'C'
+    srimName = 'C (diamond)'
+    epsilon_r = 5.7                  # [  ] (static) relative permittivity (to vacuum) (2)
+    epsilon = epsilon_0 * epsilon_r  # [F/cm] material permittivity
+    density = 3.515                  # [g/cm^3] density
+    E_gap = 5.47                     # [eV] energy gap @ 300 K
+    E_eh = 13                        # [eV] average energy to create an electron-hole pair (3)
+    electronMobility = 2200.0        # [cm^2.V^(-1).s^(-1)] electron mobility (drift) (2)
+    holeMobility = 1800.0            # [cm^2.V^(-1).s^(-1)] hole mobility (drift) (2)
+    A_star = 90.0                    # [A.cm^(-2).K^(-2)] effective Richardson constant (p-diamond)
+
+
+# %%
+##############################################################################
+# DEVICE CHARACTERISTICS (Basta trocar o nome do material abaixo)
+##############################################################################
+material = 'silicon_carbide'   # 'silicon', 'silicon_carbide', 'gallium_arsenide', 'gallium_nitride', 'germanium', 'diamond'
+semiconductor = globals()[material]
+
+temperature = 298.15           # [K] Measurement temperature (25 °C = 298.15 K)
+breakdownVoltage = 1200.0      # [V] Reverse breakdown voltage from datasheet
+is_PT = False                  # True if Punch-Through structure, False if Non-Punch-Through
+V_PT = None                    # [V] Punch-through voltage (if is_PT = True)
+x_tipico = 1.7                 # [-] Temperature exponent for mobility (assumed for 1-temp extraction)
+
+# Faixas de ajuste (deixe None para automático ou passe tupla (V_min, V_max))
+faixa_v_exp = None             # Ex: (0.55, 0.85)
+faixa_v_lin = None             # Ex: (1.05, 1.25)
+faixa_v_cv  = None             # Ex: (2.0, 25.0)
+ignorar_compliance_iv = True   # Descarta platô saturado (ex: compliance de 10 mA) antes de ajustar S1
+
+
+##############################################################################
+# MODULAR EXTRACTION FUNCTIONS
+##############################################################################
+def carregar_dados_experimentais(archive_iv, archive_cv):
+    """Lê as planilhas I-V e C-V, detecta a polaridade direta e ordena os vetores."""
+    df_iv = pd.read_excel(archive_iv)
+    V1_all = pd.to_numeric(df_iv["AnodeV"], errors="coerce").to_numpy()
+    I1_all_signed = pd.to_numeric(df_iv["AnodeI"], errors="coerce").to_numpy()
+
+    valid_iv = ~np.isnan(V1_all) & ~np.isnan(I1_all_signed)
+    V1_all = V1_all[valid_iv]
+    I1_all_signed = I1_all_signed[valid_iv]
+    I1_all_abs = np.abs(I1_all_signed)
+
+    idx_all = np.argsort(V1_all)
+    V1_all = V1_all[idx_all]
+    I1_all_signed = I1_all_signed[idx_all]
+    I1_all_abs = I1_all_abs[idx_all]
+
+    i_max_pos = np.max(I1_all_abs[V1_all > 0]) if np.any(V1_all > 0) else 0.0
+    i_max_neg = np.max(I1_all_abs[V1_all < 0]) if np.any(V1_all < 0) else 0.0
+
+    if i_max_neg > i_max_pos * 10:
+        mask_fwd = V1_all <= 0
+        V1 = -V1_all[mask_fwd]
+        I1 = I1_all_abs[mask_fwd]
+    else:
+        mask_fwd = V1_all >= 0
+        V1 = V1_all[mask_fwd]
+        I1 = I1_all_abs[mask_fwd]
+
+    idx_iv = np.argsort(V1)
+    V1, I1 = V1[idx_iv], I1[idx_iv]
+
+    df_cv = pd.read_excel(archive_cv)
+    V2_raw = pd.to_numeric(df_cv["DCV_AC"], errors="coerce").to_numpy()
+    C_raw = pd.to_numeric(df_cv["Cp_AC"], errors="coerce").to_numpy()
+
+    valid_cv = ~np.isnan(V2_raw) & ~np.isnan(C_raw)
+    V2_raw, C_raw = V2_raw[valid_cv], C_raw[valid_cv]
+
+    V2 = -V2_raw if np.median(V2_raw) < 0 else V2_raw
+    mask_rev = (V2 >= 0) & (C_raw > 0)
+    idx_cv = np.argsort(V2[mask_rev])
+    V2 = V2[mask_rev][idx_cv]
+    C = C_raw[mask_rev][idx_cv]
+
+    if np.median(C) > 1e-6:
+        C = C * 1e-12
+
+    return V1_all, I1_all_signed, I1_all_abs, V1, I1, V2, C
+
+
+def extrair_parametros_iv(V1, I1, T, faixa_exp=None, faixa_lin=None, filtrar_compliance=True):
+    """Extrai n, Is, S1 e Rd (com incertezas ±1σ) a partir da curva I-V direta."""
+    i_max = I1.max()
+
+    # 1. Região Exponencial: ln(I) = ln(Is) + (q / (n * kB * T)) * V
+    if faixa_exp is None:
+        mask_auto_exp = (I1 >= max(1e-8, i_max * 1e-6)) & (I1 <= i_max * 0.05)
+        if mask_auto_exp.sum() >= 4:
+            faixa_exp = (float(V1[mask_auto_exp].min()), float(V1[mask_auto_exp].max()))
+        else:
+            faixa_exp = (float(np.percentile(V1, 20)), float(np.percentile(V1, 45)))
+
+    mask_exp = (V1 >= faixa_exp[0]) & (V1 <= faixa_exp[1]) & (I1 > 0)
+    reg_exp = linregress(V1[mask_exp], np.log(I1[mask_exp]))
+
+    n = q / (reg_exp.slope * kB * T)
+    err_n = n * (reg_exp.stderr / reg_exp.slope)
+    Is = np.exp(reg_exp.intercept)
+    rel_err_Is = reg_exp.intercept_stderr
+
+    # 2. Região Resistiva Linear: I = S1 * V + b
+    if faixa_lin is None:
+        teto = 0.95 * i_max if filtrar_compliance else i_max
+        mask_auto_lin = (I1 >= 0.45 * i_max) & (I1 <= teto)
+        if mask_auto_lin.sum() >= 4:
+            faixa_lin = (float(V1[mask_auto_lin].min()), float(V1[mask_auto_lin].max()))
+        else:
+            faixa_lin = (float(np.percentile(V1, 75)), float(V1.max()))
+
+    mask_lin = (V1 >= faixa_lin[0]) & (V1 <= faixa_lin[1])
+    reg_lin = linregress(V1[mask_lin], I1[mask_lin])
+    S1, err_S1 = reg_lin.slope, reg_lin.stderr
+
+    Rd = 1.0 / S1
+    err_Rd = Rd * (err_S1 / S1)
+
+    return {
+        "n": n, "err_n": err_n,
+        "Is": Is, "rel_err_Is": rel_err_Is,
+        "S1": S1, "err_S1": err_S1,
+        "Rd": Rd, "err_Rd": err_Rd,
+        "reg_exp": reg_exp, "mask_exp": mask_exp,
+        "reg_lin": reg_lin, "mask_lin": mask_lin,
+        "faixa_exp": faixa_exp, "faixa_lin": faixa_lin,
+    }
+
+
+def extrair_parametros_cv(V2, C, faixa_cv=None):
+    """Extrai a inclinação S2 (com incerteza ±1σ) da linearização 1/C^2 vs Vr."""
+    if faixa_cv is None:
+        faixa_cv = (max(1.0, float(V2.max() * 0.1)), float(V2.max() * 0.9))
+
+    mask_cv = (V2 >= faixa_cv[0]) & (V2 <= faixa_cv[1]) & (C > 0)
+    reg_cv = linregress(V2[mask_cv], 1.0 / (C[mask_cv] ** 2))
+    S2, err_S2 = reg_cv.slope, reg_cv.stderr
+
+    return {
+        "S2": S2, "err_S2": err_S2,
+        "reg_cv": reg_cv, "mask_cv": mask_cv,
+        "faixa_cv": faixa_cv,
+    }
+
+
+def calcular_parametros_fisicos(iv_res, cv_res, material_cls, T, V_eff):
+    """Calcula ND, LD, A e phi_b (com propagação analítica ±1σ) usando a classe do material."""
+    S1, err_S1 = iv_res["S1"], iv_res["err_S1"]
+    S2, err_S2 = cv_res["S2"], cv_res["err_S2"]
+    Is, rel_err_Is = iv_res["Is"], iv_res["rel_err_Is"]
+
+    eps = material_cls.epsilon
+    mu_300 = material_cls.electronMobility
+    A_star = material_cls.A_star
+
+    # Concentração média de dopantes ND [cm^-3]
+    ND = (S1 * eps * np.sqrt(V_eff * S2)) / (q * mu_300)
+    rel_err_ND = np.sqrt((err_S1 / S1) ** 2 + (0.5 * err_S2 / S2) ** 2)
+    err_ND = ND * rel_err_ND
+
+    # Espessura da região de deriva LD [cm e um]
+    LD_cm = np.sqrt((2.0 * eps * V_eff) / (q * ND))
+    LD_um = LD_cm * 1e4
+    err_LD_um = LD_um * (0.5 * rel_err_ND)
+
+    # Área ativa efetiva A [cm^2]
+    A = np.sqrt(2.0 / (S2 * q * ND * eps))
+    rel_err_A = np.sqrt((-0.5 * err_S1 / S1) ** 2 + (-0.75 * err_S2 / S2) ** 2)
+    err_A = A * rel_err_A
+
+    # Altura de barreira Schottky phi_b [V]
+    phi_b = (kB * T / q) * np.log((A * A_star * (T ** 2)) / Is)
+    err_phi_b = (kB * T / q) * np.sqrt(rel_err_A ** 2 + rel_err_Is ** 2)
+
+    return {
+        "ND": ND, "err_ND": err_ND,
+        "LD_cm": LD_cm, "LD_um": LD_um, "err_LD_um": err_LD_um,
+        "A": A, "err_A": err_A,
+        "phi_b": phi_b, "err_phi_b": err_phi_b,
+    }
+
+
+def calcular_perfil_deplecao(V2, C, A, material_cls, suavizar=True):
+    """Calcula W_R(Vr) [um] e o perfil local de dopagem N_D(W_R) [cm^-3]."""
+    eps = material_cls.epsilon
+    WR_cm = (eps * A) / C
+    WR_um = WR_cm * 1e4
+
+    inv_C2 = 1.0 / (C ** 2)
+    if suavizar and len(V2) >= 61:
+        inv_C2_proc = savgol_filter(inv_C2, window_length=61, polyorder=2)
+    else:
+        inv_C2_proc = inv_C2
+
+    d_invC2_dV = np.gradient(inv_C2_proc, V2)
+    ND_perfil = 2.0 / (q * eps * (A ** 2) * d_invC2_dV)
+
+    return WR_um, ND_perfil
+
+
+def imprimir_resultados(material_cls, T, iv_res, cv_res, fis_res, x_val):
+    """Imprime a tabela resumo dos parâmetros extraídos e incertezas no terminal."""
+    print("\n" + "=" * 78)
+    print(f" MATERIAL: {material_cls.name} | T = {T:.2f} K ({T - 273.15:.1f} °C) | "
+          f"eps_r = {material_cls.epsilon_r} | mu_300 = {material_cls.electronMobility} cm^2/Vs")
+    print("=" * 78)
+    print(f"{'PARÂMETRO':<32} | {'VALOR EXTRAÍDO':<16} | {'INCERTEZA (±1σ)':<22}")
+    print("=" * 78)
+    print(f"{'S1 (Inclinação I-V linear)':<32} | {iv_res['S1']:<16.4e} | ± {iv_res['err_S1']:<17.4e} [Ohm^-1]")
+    print(f"{'S2 (Inclinação 1/C^2 x V)':<32} | {cv_res['S2']:<16.4e} | ± {cv_res['err_S2']:<17.4e} [F^-2*V^-1]")
+    print("-" * 78)
+    print(f"{'n (Fator de idealidade)':<32} | {iv_res['n']:<16.4f} | ± {iv_res['err_n']:<17.4f} [-]")
+    print(f"{'Rd (Resistência de deriva)':<32} | {iv_res['Rd']:<16.4e} | ± {iv_res['err_Rd']:<17.4e} [Ohm]")
+    print(f"{'LD (Espessura de deriva)':<32} | {fis_res['LD_um']:<16.4f} | ± {fis_res['err_LD_um']:<17.4f} [um]")
+    print(f"{'x (Coef. temp. - assumido)':<32} | {x_val:<16.4f} | {'N/A (1 temp.)':<19} [-]")
+    print(f"{'A (Área ativa)':<32} | {fis_res['A']:<16.6f} | ± {fis_res['err_A']:<17.6f} [cm^2]")
+    print(f"{'phi_b (Altura de barreira)':<32} | {fis_res['phi_b']:<16.4f} | ± {fis_res['err_phi_b']:<17.4f} [V]")
+    print(f"{'ND (Dopagem média)':<32} | {fis_res['ND']:<16.4e} | ± {fis_res['err_ND']:<17.4e} [cm^-3]")
+    print("=" * 78 + "\n")
+
+
+def plotar_resultados(V1_all, I1_all_signed, I1_all_abs, V1, I1, V2, C, iv_res, cv_res, fis_res, WR_um, ND_perfil):
+    """Gera os 4 pares de figuras (a) e (b) com pontos experimentais isolados."""
+    plt.style.use("seaborn-v0_8-whitegrid")
+
+    def rotular_dentro(ax, texto, pos="top-left"):
+        coords = {
+            "top-left":     (0.02, 0.94, "top", "left"),
+            "bottom-right": (0.98, 0.06, "bottom", "right"),
+            "bottom-left":  (0.02, 0.06, "bottom", "left"),
+            "top-right":    (0.98, 0.94, "top", "right"),
+        }
+        x, y, va, ha = coords[pos]
+        ax.text(
+            x, y, texto, transform=ax.transAxes,
+            fontsize=12, fontweight="bold", va=va, ha=ha,
+            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", edgecolor="none", alpha=0.8)
+        )
+
+    # FIGURA 1: (a) Pontos experimentais IV e (b) Pontos experimentais CV
+    fig1, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+    fig1.suptitle("1) Dados Experimentais Brutos: I-V e C-V", fontsize=13, fontweight="bold")
+
+    ax1.plot(V1_all, I1_all_signed, "o", ms=3, color="#1f77b4", label="Pontos Experimentais I-V")
+    ax1.axhline(0, color="gray", lw=0.8, ls="--")
+    ax1.axvline(0, color="gray", lw=0.8, ls="--")
+    ax1.set_title("Curva I-V Experimental Completa")
+    ax1.set_xlabel("Tensão $V$ [V]")
+    ax1.set_ylabel("Corrente $I$ [A]")
+    ax1.legend(loc="upper left")
+    rotular_dentro(ax1, "(a)", pos="bottom-right")
+
+    ax2.plot(V2, C * 1e12, "s", ms=3, color="#2ca02c", label="Pontos Experimentais C-V")
+    ax2.set_title("Curva C-V Experimental")
+    ax2.set_xlabel("Tensão Reversa $V_r$ [V]")
+    ax2.set_ylabel("Capacitância $C_r$ [pF]")
+    ax2.legend(loc="upper right")
+    rotular_dentro(ax2, "(b)", pos="top-left")
+
+    plt.tight_layout()
+    plt.savefig("1_experimental_IV_CV.png", dpi=300)
+
+    # FIGURA 2: (a) Pontos CV e (b) Curva 1/C^2 + Ajuste Linear
+    fig2, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+    fig2.suptitle("2) Análise Capacitiva: C-V e Linearização $1/C^2 \\times V_r$", fontsize=13, fontweight="bold")
+
+    ax1.plot(V2, C * 1e12, "o", ms=4, color="#2ca02c", label="Pontos Experimentais $C_r$")
+    ax1.set_title("Capacitância Reversa ($C_r \\times V_r$)")
+    ax1.set_xlabel("Tensão Reversa $V_r$ [V]")
+    ax1.set_ylabel("Capacitância $C_r$ [pF]")
+    ax1.legend(loc="upper right")
+    rotular_dentro(ax1, "(a)", pos="top-left")
+
+    inv_C2 = 1.0 / (C ** 2)
+    v_grid_cv = np.linspace(V2.min(), V2.max(), 200)
+    reg_cv = cv_res["reg_cv"]
+    S2 = cv_res["S2"]
+    faixa_cv = cv_res["faixa_cv"]
+
+    ax2.plot(V2, inv_C2, "o", ms=4, color="#9467bd", alpha=0.75, label="Dados $1/C_r^2$")
+    ax2.plot(
+        v_grid_cv, reg_cv.slope * v_grid_cv + reg_cv.intercept,
+        "--", lw=2, color="black",
+        label=f"Ajuste Linear ($S_2 = {S2:.3e}\\,\\mathrm{{F^{{-2}}V^{{-1}}}}$)"
+    )
+    ax2.axvspan(faixa_cv[0], faixa_cv[1], color="green", alpha=0.12, label="Faixa de Ajuste")
+    ax2.set_title("Linearização de Mott-Schottky ($1/C_r^2 \\times V_r$)")
+    ax2.set_xlabel("Tensão Reversa $V_r$ [V]")
+    ax2.set_ylabel("$1/C_r^2$ [$\\mathrm{F^{-2}}$]")
+    ax2.legend(loc="upper left")
+    rotular_dentro(ax2, "(b)", pos="bottom-right")
+
+    plt.tight_layout()
+    plt.savefig("2_CV_e_1sobreC2.png", dpi=300)
+
+    # FIGURA 3: (a) Curva IV Semi-log completa e (b) Parte linear ajustada
+    fig3, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+    fig3.suptitle("3) Análise Semi-Log I-V: Curva Completa e Região Exponencial Linear", fontsize=13, fontweight="bold")
+
+    pos_all = I1_all_abs > 0
+    ax1.semilogy(V1_all[pos_all], I1_all_abs[pos_all], "o", ms=2.5, color="#1f77b4", label="$|I|$ vs $V$ (Negativo e Positivo)")
+    ax1.axvline(0, color="gray", lw=0.8, ls="--")
+    ax1.set_title("Curva I-V Semi-Log Completa (Polarização Reversa e Direta)")
+    ax1.set_xlabel("Tensão $V$ [V]")
+    ax1.set_ylabel("$|I|$ [A] (escala log)")
+    ax1.legend(loc="upper left")
+    rotular_dentro(ax1, "(a)", pos="bottom-right")
+
+    mask_exp = iv_res["mask_exp"]
+    reg_exp = iv_res["reg_exp"]
+    v_lin_exp = V1[mask_exp]
+    i_lin_exp = I1[mask_exp]
+    v_grid_exp = np.linspace(v_lin_exp.min(), v_lin_exp.max(), 100)
+    i_fit_exp = np.exp(reg_exp.slope * v_grid_exp + reg_exp.intercept)
+
+    ax2.semilogy(v_lin_exp, i_lin_exp, "o", ms=5, color="#ff7f0e", label="Pontos na Região Linear Semi-Log")
+    ax2.semilogy(
+        v_grid_exp, i_fit_exp, "--", lw=2, color="black",
+        label=f"Ajuste Linear ($n = {iv_res['n']:.3f}$, $I_s = {iv_res['Is']:.2e}\\,\\mathrm{{A}}$)"
+    )
+    ax2.set_title("Região Linear da Curva Semi-Log I-V & Ajuste")
+    ax2.set_xlabel("Tensão Direta $V_F$ [V]")
+    ax2.set_ylabel("Corrente Direta $I_F$ [A] (escala log)")
+    ax2.legend(loc="upper left")
+    rotular_dentro(ax2, "(b)", pos="bottom-right")
+
+    plt.tight_layout()
+    plt.savefig("3_IV_semilog_completa_e_linear.png", dpi=300)
+
+    # FIGURA 4: (a) V x W_R e (b) W_R x N_D
+    fig4, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+    fig4.suptitle("4) Perfil Espacial de Depleção ($W_R$) e Concentração de Dopantes ($N_D$)", fontsize=13, fontweight="bold")
+
+    ax1.plot(V2, WR_um, "o", ms=3.5, color="#d62728", label="$W_R(V_r) = \\epsilon_0 \\epsilon_r A / C_r$")
+    ax1.set_title("Largura da Região de Depleção vs. Tensão Reversa ($V_r \\times W_R$)")
+    ax1.set_xlabel("Tensão Reversa $V_r$ [V]")
+    ax1.set_ylabel("Largura de Depleção $W_R$ [$\\mu\\mathrm{m}$]")
+    ax1.legend(loc="upper left")
+    rotular_dentro(ax1, "(a)", pos="bottom-right")
+
+    ND_med = fis_res["ND"]
+    valid_nd = (ND_perfil > 0) & np.isfinite(ND_perfil)
+    ax2.semilogy(WR_um[valid_nd], ND_perfil[valid_nd], "s", ms=3.5, color="#17becf", label="Perfil Local $N_D(W_R)$")
+    ax2.axhline(ND_med, color="black", ls="--", lw=1.8, label=f"$N_D$ Médio Extraído = ${ND_med:.3e}\\,\\mathrm{{cm^{{-3}}}}$")
+    ax2.set_title("Concentração de Dopantes vs. Largura de Depleção ($W_R \\times N_D$)")
+    ax2.set_xlabel("Largura de Depleção $W_R$ [$\\mu\\mathrm{m}$]")
+    ax2.set_ylabel("Concentração de Dopantes $N_D$ [$\\mathrm{cm^{-3}}$]")
+    ax2.legend(loc="upper right")
+    ax2.semilogy(WR_um[valid_nd], ND_perfil[valid_nd], "s", ms=3.5, color="#17becf", label="Perfil Local $N_D(W_R)$")
+    ax2.axhline(ND_med, color="black", ls="--", lw=1.8, label=f"$N_D$ Médio Extraído = ${ND_med:.3e}\\,\\mathrm{{cm^{{-3}}}}$")
+    ax2.set_ylim(ND_med * 0.2, ND_med * 5.0)  # Evita o micro-zoom artificial no ruído
+    rotular_dentro(ax2, "(b)", pos="top-left")
+
+    plt.tight_layout()
+    plt.savefig("4_WR_e_ND.png", dpi=300)
+    plt.show()
+
+
+##############################################################################
+# MAIN EXECUTION
+##############################################################################
+if __name__ == "__main__":
+    archive_iv = r"C:\Users\user\OneDrive\Documents\Faculdade\IC\Códigos\Extração de parâmetros de diodos\Silicon Carbide\Medidas\30-06-26-sic-schottky-c04-a02-5--38V-iv-quiet-polished.xlsx"
+    archive_cv = r"C:\Users\user\OneDrive\Documents\Faculdade\IC\Códigos\Extração de parâmetros de diodos\Silicon Carbide\Medidas\30-06-26-sic-schottky-c04-a02-0--30V-1M-cv-quiet-polished.xlsx"
+
+    V_eff = V_PT if (is_PT and V_PT is not None) else breakdownVoltage
+
+    # 1. Carregamento dos dados experimentais
+    V1_all, I1_all_signed, I1_all_abs, V1, I1, V2, C = carregar_dados_experimentais(archive_iv, archive_cv)
+
+    # 2. Extrações lineares I-V e C-V
+    iv_res = extrair_parametros_iv(
+        V1, I1, T=temperature,
+        faixa_exp=faixa_v_exp, faixa_lin=faixa_v_lin,
+        filtrar_compliance=ignorar_compliance_iv
+    )
+    cv_res = extrair_parametros_cv(V2, C, faixa_cv=faixa_v_cv)
+
+    # 3. Parâmetros físicos do dispositivo e perfil espacial
+    fis_res = calcular_parametros_fisicos(iv_res, cv_res, semiconductor, T=temperature, V_eff=V_eff)
+    WR_um, ND_perfil = calcular_perfil_deplecao(V2, C, fis_res["A"], semiconductor, suavizar=True)
+
+    # 4. Exibição da tabela e plotagem
+    imprimir_resultados(semiconductor, temperature, iv_res, cv_res, fis_res, x_tipico)
+    plotar_resultados(V1_all, I1_all_signed, I1_all_abs, V1, I1, V2, C, iv_res, cv_res, fis_res, WR_um, ND_perfil)
